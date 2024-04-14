@@ -99,7 +99,7 @@ if __name__ == "__main__":
     domain_name = urlparse(start_url).netloc
     json_output = crawl(start_url)
     
-    with open(f"{domain_name}.txt", "w") as f:
+    with open(f"{domain_name}.json", "w") as f:
         f.write(json.dumps(json_output, indent=4))
 
-    print(f"Output written to {domain_name}.txt")
+    print(f"Output written to {domain_name}.json")
