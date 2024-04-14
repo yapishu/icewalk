@@ -1,6 +1,6 @@
 ## IceWalk
 
-Crawls sites and outputs contents in markdown for LLMs. Tries to fall over to selenium for JS-blocked content, runs concurrently.
+Crawls sites and outputs contents in markdown for LLMs. Tries to fall over to selenium for JS-rendered content, runs concurrently.
 
 Output format:
 
