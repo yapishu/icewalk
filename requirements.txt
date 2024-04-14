@@ -1,0 +1,3 @@
+beautifulsoup4==4.12.3
+html2text==2024.2.26
+requests==2.31.0
