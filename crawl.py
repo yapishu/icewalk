@@ -4,6 +4,11 @@ import html2text
 import json
 import sys
 from urllib.parse import urlparse, urljoin
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.options import Options
+import concurrent.futures
 
 def html2markdown(html):
     htmlformatter = html2text.HTML2Text()
@@ -12,19 +17,37 @@ def html2markdown(html):
     htmlformatter.body_width = 0
     return htmlformatter.handle(html)
 
-def fetch_html(url):
+def fetch_html(url, force_selenium=False):
     try:
         response = requests.get(url, timeout=10)
         response.raise_for_status()
         content_type = response.headers.get('Content-Type', '')
         if 'text/html' in content_type:
-            return response.text
+            html = response.text
+            if needs_selenium(html):
+                return fetch_with_selenium(url)
+            return html
         else:
             print(f"Skipped non-HTML content at {url} (content type: {content_type})")
             return None
     except requests.RequestException as e:
         print(f"Request failed for {url}: {e}")
         return None
+
+def fetch_with_selenium(url):
+    options = Options()
+    options.headless = True
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+    driver.get(url)
+    html = driver.page_source
+    driver.quit()
+    return html
+
+def needs_selenium(html):
+    soup = BeautifulSoup(html, 'html.parser')
+    script_count = len(soup.find_all('script', {'src': True}))
+    return script_count > 5
 
 def extract_metadata(soup, url):
     title = soup.title.string if soup.title else "No title"
@@ -41,32 +64,29 @@ def convert_to_json(html, url):
 
 def crawl(url):
     visited = set()
-    to_visit = [url]
+    to_visit = set([url])
     results = []
-
     domain_name = urlparse(url).netloc
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+    futures = {executor.submit(fetch_html, url): url for url in to_visit}
 
-    while to_visit:
-        current_url = to_visit.pop(0)
-        if current_url in visited or current_url.endswith('#'):
-            continue
+    while futures:
+        done, _ = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED)
+        for future in done:
+            html = future.result()
+            if html:
+                current_url = futures.pop(future)
+                visited.add(current_url)
+                print(f"Fetching {current_url}")
+                soup = BeautifulSoup(html, 'html.parser')
+                results.append(convert_to_json(html, current_url))
 
-        print(f"Crawling: {current_url}")
-        visited.add(current_url)
-        html = fetch_html(current_url)
-        if html:
-            soup = BeautifulSoup(html, 'html.parser')
-            for link in soup.find_all('a', href=True):
-                href = link['href']
-                parsed_href = urlparse(href)
-                if parsed_href.fragment or parsed_href.path.lower().endswith(('.pdf', '.jpg', '.png', '.gif')):
-                    continue
-                if parsed_href.netloc == domain_name or not parsed_href.netloc:
-                    full_url = urljoin(current_url, href)
-                    if full_url not in visited:
-                        to_visit.append(full_url)
-
-            results.append(convert_to_json(html, current_url))
+                for link in soup.find_all('a', href=True):
+                    href = urljoin(current_url, link['href'])
+                    parsed_href = urlparse(href)
+                    if not parsed_href.fragment and not parsed_href.path.lower().endswith(('.pdf', '.jpg', '.png', '.gif')):
+                        if parsed_href.netloc == domain_name and href not in visited:
+                            futures[executor.submit(fetch_html, href)] = href
 
     return results
 
@@ -76,5 +96,10 @@ if __name__ == "__main__":
         sys.exit(1)
 
     start_url = sys.argv[1]
+    domain_name = urlparse(start_url).netloc
     json_output = crawl(start_url)
-    print(json.dumps(json_output, indent=4))
+    
+    with open(f"{domain_name}.txt", "w") as f:
+        f.write(json.dumps(json_output, indent=4))
+
+    print(f"Output written to {domain_name}.txt")
