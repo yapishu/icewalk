@@ -2,6 +2,8 @@ from fasthtml.common import *
 from crawl import crawl
 from urllib.parse import urlparse
 import asyncio
+from starlette.responses import FileResponse
+import os
 
 # pyright: reportUndefinedVariable=false
 
@@ -34,12 +36,13 @@ def get():
 @rt('/crawl')
 async def post(url: str, max_depth: int = 3, timeout: int = 30):
     domain_name = urlparse(url).netloc
+    filename = f"{domain_name}.md"
     
     async def run_crawler():
         loop = asyncio.get_event_loop()
         md_output = await loop.run_in_executor(None, crawl, url, max_depth, timeout)
         
-        with open(f"{domain_name}.md", "w", encoding="utf-8") as f:
+        with open(filename, "w", encoding="utf-8") as f:
             f.write("\n\n".join(md_output))
         
         return len(md_output)
@@ -49,7 +52,15 @@ async def post(url: str, max_depth: int = 3, timeout: int = 30):
     return Div(
         H2("Crawling Complete"),
         P(f"Crawled {pages_crawled} pages from {url}"),
-        P(f"Output written to {domain_name}.md")
+        A("Download Markdown File", href=f"/download/{filename}", download=filename, cls="button")
     )
+
+@rt('/download/{filename}')
+def get(filename: str):
+    file_path = os.path.join(os.getcwd(), filename)
+    if os.path.exists(file_path):
+        return FileResponse(file_path, filename=filename, media_type='text/markdown')
+    else:
+        return Div(H2("File Not Found"), P(f"The file {filename} does not exist."))
 
 serve()
