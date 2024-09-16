@@ -9,6 +9,7 @@ import argparse
 # pyright: reportUndefinedVariable=false
 
 app, rt = fast_app()
+headless_mode = True
 
 @rt('/')
 def get():
@@ -41,7 +42,7 @@ async def post(url: str, max_depth: int = 3, timeout: int = 30):
     
     async def run_crawler():
         loop = asyncio.get_event_loop()
-        md_output = await loop.run_in_executor(None, crawl, url, max_depth, timeout)
+        md_output = await loop.run_in_executor(None, crawl, url, max_depth, timeout, headless_mode)
         
         with open(filename, "w", encoding="utf-8") as f:
             f.write("\n\n".join(md_output))
@@ -67,6 +68,10 @@ def get(filename: str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the FastHTML web crawler app")
     parser.add_argument("--port", type=int, default=5001, help="Port to run the server on")
+    parser.add_argument("--headless", action="store_true", help="Run Chrome in headless mode")
     args = parser.parse_args()
+
+    # Set the global headless_mode variable
+    headless_mode = args.headless
 
     serve(port=args.port)

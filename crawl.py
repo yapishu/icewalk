@@ -23,14 +23,21 @@ def html2markdown(html):
     htmlformatter.body_width = 0
     return htmlformatter.handle(html)
 
-def fetch_html(url, timeout=30):
+def fetch_html(url, timeout=30, headless=True):
     options = Options()
-    options.headless = True
+    if headless:
+        options.add_argument('--headless')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
+    try:
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
+    except Exception as e:
+        print(f"Error creating Chrome WebDriver: {e}")
+        print(f"Error type: {type(e).__name__}")
+        print(f"Error details: {str(e)}")
+        return None, 500
     
     try:
         driver.get(url)
@@ -49,6 +56,8 @@ def fetch_html(url, timeout=30):
         status_code = 408
     except Exception as e:
         print(f"Error fetching {url}: {e}")
+        print(f"Error type: {type(e).__name__}")
+        print(f"Error details: {str(e)}")
         html = None
         status_code = 500
     finally:
@@ -85,7 +94,7 @@ def convert_to_markdown(html, url):
     
     return md_output
 
-def crawl(url, max_depth=3, timeout=30):
+def crawl(url, max_depth=3, timeout=30, headless=True):
     visited = set()
     to_visit = [(url, 0)]
     results = []
@@ -93,7 +102,6 @@ def crawl(url, max_depth=3, timeout=30):
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
     futures = {}
 
-    start_time = time.time()
     while to_visit:
         new_urls = set()
         current_batch = to_visit[:10]
@@ -103,7 +111,7 @@ def crawl(url, max_depth=3, timeout=30):
 
         for current_url, depth in current_batch:
             if current_url not in visited and (max_depth == -1 or depth <= max_depth):
-                futures[executor.submit(fetch_html, current_url, timeout=timeout)] = (current_url, depth)
+                futures[executor.submit(fetch_html, current_url, timeout=timeout, headless=headless)] = (current_url, depth)
 
         for future in concurrent.futures.as_completed(futures):
             current_url, depth = futures.pop(future)
@@ -141,15 +149,17 @@ if __name__ == "__main__":
     parser.add_argument("url", help="Starting URL for the crawler")
     parser.add_argument("--max-depth", type=int, default=3, help="Maximum depth for crawling (default: 3, use -1 for unlimited depth)")
     parser.add_argument("--timeout", type=int, default=30, help="Timeout for each request in seconds (default: 30)")
+    parser.add_argument("--headless", action="store_true", help="Run Chrome in headless mode")
     args = parser.parse_args()
 
     start_url = args.url
     max_depth = args.max_depth
     timeout = args.timeout
+    headless = args.headless
     domain_name = urlparse(start_url).netloc
 
     print(f"Crawling started from {start_url} with max depth {'unlimited' if max_depth == -1 else max_depth}")
-    md_output = crawl(start_url, max_depth=max_depth, timeout=timeout)
+    md_output = crawl(start_url, max_depth=max_depth, timeout=timeout, headless=headless)
     print(f"Crawling finished. Total pages crawled: {len(md_output)}")
     
     with open(f"{domain_name}.md", "w", encoding="utf-8") as f:
