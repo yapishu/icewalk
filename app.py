@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 import asyncio
 from starlette.responses import FileResponse
 import os
+import argparse
 
 # pyright: reportUndefinedVariable=false
 
@@ -63,4 +64,9 @@ def get(filename: str):
     else:
         return Div(H2("File Not Found"), P(f"The file {filename} does not exist."))
 
-serve()
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run the FastHTML web crawler app")
+    parser.add_argument("--port", type=int, default=5001, help="Port to run the server on")
+    args = parser.parse_args()
+
+    serve(port=args.port)
