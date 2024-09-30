@@ -1,0 +1,9 @@
+services:
+  app:
+    build: .
+    ports:
+      - "5001:5001"
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
