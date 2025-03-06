@@ -1,0 +1,4 @@
+/venv/
+.sesskey
+*.pyc
+*.md

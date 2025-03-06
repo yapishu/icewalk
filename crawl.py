@@ -1,7 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
 import html2text
-import json
 import sys
 from urllib.parse import urlparse, urljoin
 from selenium import webdriver
@@ -9,6 +8,13 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.options import Options
 import concurrent.futures
+import time
+from requests.exceptions import RequestException, Timeout
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
+from selenium.common.exceptions import TimeoutException
+import argparse
 
 def html2markdown(html):
     htmlformatter = html2text.HTML2Text()
@@ -17,89 +23,146 @@ def html2markdown(html):
     htmlformatter.body_width = 0
     return htmlformatter.handle(html)
 
-def fetch_html(url, force_selenium=False):
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        content_type = response.headers.get('Content-Type', '')
-        if 'text/html' in content_type:
-            html = response.text
-            if needs_selenium(html):
-                return fetch_with_selenium(url)
-            return html
-        else:
-            print(f"Skipped non-HTML content at {url} (content type: {content_type})")
-            return None
-    except requests.RequestException as e:
-        print(f"Request failed for {url}: {e}")
-        return None
-
-def fetch_with_selenium(url):
+def fetch_html(url, timeout=30, headless=True):
     options = Options()
-    options.headless = True
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
-    driver.get(url)
-    html = driver.page_source
-    driver.quit()
-    return html
-
-def needs_selenium(html):
-    soup = BeautifulSoup(html, 'html.parser')
-    script_count = len(soup.find_all('script', {'src': True}))
-    return script_count > 5
+    if headless:
+        options.add_argument('--headless')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    
+    try:
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
+    except Exception as e:
+        print(f"Error creating Chrome WebDriver: {e}")
+        print(f"Error type: {type(e).__name__}")
+        print(f"Error details: {str(e)}")
+        return None, 500
+    
+    try:
+        driver.get(url)
+        
+        WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
+        
+        time.sleep(5)
+        
+        html = driver.page_source
+        status_code = 200
+    except TimeoutException:
+        print(f"Timeout error for {url}")
+        html = None
+        status_code = 408
+    except Exception as e:
+        print(f"Error fetching {url}: {e}")
+        print(f"Error type: {type(e).__name__}")
+        print(f"Error details: {str(e)}")
+        html = None
+        status_code = 500
+    finally:
+        driver.quit()
+    
+    return html, status_code
 
 def extract_metadata(soup, url):
     title = soup.title.string if soup.title else "No title"
     meta_description = soup.find("meta", attrs={"name": "description"})
     description = meta_description["content"] if meta_description else ""
-    language = soup.html.attrs.get('lang', 'unknown')
-    return {"title": title, "description": description, "language": language, "sourceURL": url}
+    language = soup.html.attrs.get('lang', 'unknown') if soup.html and hasattr(soup.html, 'attrs') else 'unknown'
+    return title, description, language, url
 
-def convert_to_json(html, url):
+def convert_to_markdown(html, url):
     soup = BeautifulSoup(html, 'html.parser')
-    markdown = html2markdown(html)
-    metadata = extract_metadata(soup, url)
-    return {"content": markdown, "metadata": metadata}
+    
+    main_content = soup.find('main') or soup.find('body')
+    if main_content:
+        markdown = html2markdown(str(main_content))
+    else:
+        markdown = html2markdown(html)
+    
+    title, description, language, source_url = extract_metadata(soup, url)
+    
+    md_output = f"# {title}\n\n"
+    md_output += f"**URL:** {source_url}\n\n"
+    md_output += f"**Language:** {language}\n\n"
+    if description:
+        md_output += f"**Description:** {description}\n\n"
+    md_output += "---\n\n"
+    md_output += markdown
+    md_output += "\n\n---\n\n"
+    
+    return md_output
 
-def crawl(url):
+def crawl(url, max_depth=3, timeout=30, headless=True):
     visited = set()
-    to_visit = set([url])
+    to_visit = [(url, 0)]
     results = []
     domain_name = urlparse(url).netloc
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
-    futures = {executor.submit(fetch_html, url): url for url in to_visit}
+    futures = {}
 
-    while futures:
-        done, _ = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED)
-        for future in done:
-            html = future.result()
-            if html:
-                current_url = futures.pop(future)
+    while to_visit:
+        new_urls = set()
+        current_batch = to_visit[:10]
+        to_visit = to_visit[10:]
+
+        print(f"Debug: Processing batch of {len(current_batch)} URLs")
+
+        for current_url, depth in current_batch:
+            if current_url not in visited and (max_depth == -1 or depth <= max_depth):
+                futures[executor.submit(fetch_html, current_url, timeout=timeout, headless=headless)] = (current_url, depth)
+
+        for future in concurrent.futures.as_completed(futures):
+            current_url, depth = futures.pop(future)
+            html, status_code = future.result()
+            
+            print(f"Fetched {current_url} (depth: {depth}, status: {status_code})")
+            
+            if html and current_url not in visited:
                 visited.add(current_url)
-                print(f"Fetching {current_url}")
-                soup = BeautifulSoup(html, 'html.parser')
-                results.append(convert_to_json(html, current_url))
+                results.append(convert_to_markdown(html, current_url))
 
-                for link in soup.find_all('a', href=True):
-                    href = urljoin(current_url, link['href'])
-                    parsed_href = urlparse(href)
-                    if not parsed_href.fragment and not parsed_href.path.lower().endswith(('.pdf', '.jpg', '.png', '.gif')):
-                        if parsed_href.netloc == domain_name and href not in visited:
-                            futures[executor.submit(fetch_html, href)] = href
+                if max_depth == -1 or depth < max_depth:
+                    soup = BeautifulSoup(html, 'html.parser')
+                    links = soup.find_all('a', href=True)
+                    print(f"Debug: Found {len(links)} links on {current_url}")
+                    for link in links:
+                        href = urljoin(current_url, link['href'])
+                        parsed_href = urlparse(href)
+                        if (not parsed_href.fragment and 
+                            not parsed_href.path.lower().endswith(('.pdf', '.jpg', '.png', '.gif')) and
+                            parsed_href.netloc == domain_name and 
+                            href not in visited):
+                            new_urls.add((href, depth + 1))
+                    
+                    print(f"Debug: Added {len(new_urls)} new URLs to visit")
 
+        to_visit.extend(new_urls)
+        print(f"Debug: Total URLs to visit: {len(to_visit)}")
+
+    executor.shutdown()
     return results
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python script.py <starting URL>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Web crawler")
+    parser.add_argument("url", help="Starting URL for the crawler")
+    parser.add_argument("--max-depth", type=int, default=3, help="Maximum depth for crawling (default: 3, use -1 for unlimited depth)")
+    parser.add_argument("--timeout", type=int, default=30, help="Timeout for each request in seconds (default: 30)")
+    parser.add_argument("--headless", action="store_true", help="Run Chrome in headless mode")
+    args = parser.parse_args()
 
-    start_url = sys.argv[1]
+    start_url = args.url
+    max_depth = args.max_depth
+    timeout = args.timeout
+    headless = args.headless
     domain_name = urlparse(start_url).netloc
-    json_output = crawl(start_url)
-    
-    with open(f"{domain_name}.json", "w") as f:
-        f.write(json.dumps(json_output, indent=4))
 
-    print(f"Output written to {domain_name}.json")
+    print(f"Crawling started from {start_url} with max depth {'unlimited' if max_depth == -1 else max_depth}")
+    md_output = crawl(start_url, max_depth=max_depth, timeout=timeout, headless=headless)
+    print(f"Crawling finished. Total pages crawled: {len(md_output)}")
+    
+    with open(f"{domain_name}.md", "w", encoding="utf-8") as f:
+        f.write("\n\n".join(md_output))
+
+    print(f"Output written to {domain_name}.md")
